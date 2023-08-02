@@ -8,6 +8,7 @@ COMMON_SRCS := \
 	log.c \
 	serial.c \
 	powertag.c \
+	cJSON.c \
 	zcl.c
 
 POWERTAGD_SRCS   := $(COMMON_SRCS) powertagd.c
@@ -29,8 +30,8 @@ endif
 CFLAGS += -Wall -Wno-unused-function
 #CFLAGS += -Wextra -fsanitize=address
 
-#CFLAGS += -DENABLE_MQTT
-#LDFLAGS := -lmosquitto
+CFLAGS += -DENABLE_MQTT
+LDFLAGS := -lmosquitto
 
 all: powertagd powertagctl
 

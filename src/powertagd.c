@@ -18,11 +18,13 @@
 #include "serial.h"
 #include "zcl.h"
 #include "crypto/aes.h"
+#include "cJSON.h"
 #include "powertag.h"
 
 enum {
 	OUTPUT_FILE     = 0,
 	OUTPUT_INFLUXDB = 1,
+	OUTPUT_MQTT     = 2,
 };
 
 static int output_type = OUTPUT_FILE;
@@ -97,7 +99,7 @@ static int mqtt_client_init(void)
 	 * CONNECT/CONNACK flow, you should use mosquitto_loop_start() or
 	 * mosquitto_loop_forever() for processing net traffic.
 	 */
-	int rc = mosquitto_connect(mosq, "127.0.0.1", 1883, 60);
+	int rc = mosquitto_connect(mosq, "192.168.178.211", 1883, 60);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		mosquitto_destroy(mosq);
 		LOG_ERR("could not connect to MQTT broker: %s", mosquitto_strerror(rc));
@@ -238,6 +240,29 @@ static void write_influxdb(const char *fmt, va_list ap)
 	pthread_mutex_unlock(&influx_ctx.lock);
 }
 
+static void publish_mqtt(char *topic, char *json)
+{
+	char payload[200];
+	int rc;
+	/* Print it to a string for easy human reading - payload format is highly
+	 * application dependent. */
+	snprintf(payload, sizeof(payload), "%s", json);
+
+	/* Publish the message
+	 * mosq - our client instance
+	 * *mid = NULL - we don't want to know what the message id for this message is
+	 * topic = "example/temperature" - the topic on which this message will be published
+	 * payloadlen = strlen(payload) - the length of our payload in bytes
+	 * payload - the actual payload
+	 * qos = 2 - publish with QoS 2 for this example
+	 * retain = false - do not use the retained message feature for this message
+	 */
+	rc = mosquitto_publish(mosq, NULL, topic, strlen(payload), payload, 2, true);
+	if(rc != MOSQ_ERR_SUCCESS){
+		fprintf(stderr, "Error publishing: %s\n", mosquitto_strerror(rc));
+	}
+}
+
 static void write_report(const char *fmt, ...)
 {
 	va_list ap;
@@ -250,8 +275,44 @@ static void write_report(const char *fmt, ...)
 	case OUTPUT_INFLUXDB:
 		write_influxdb(fmt, ap);
 		break;
+	// case OUTPUT_MQTT:
+	//     write_mqtt(fmt, ap);
+	// 	break;
 	}
 	va_end(ap);
+}
+
+static void write_mqtt_report(unsigned int srcid, long unsigned int timestamp, char *state)
+{
+	cJSON *jsonObject = cJSON_CreateObject();
+
+	char *end_str;
+	char *token = strtok_r(state, ",", &end_str);
+
+	while (token != NULL)
+	{
+		// char *end_token;
+		char *key = strtok(token, "=");
+		char *value = strtok(NULL, "=");
+
+		if (key != NULL && value != NULL) {
+			cJSON_AddItemToObject(jsonObject, key, cJSON_CreateRaw(value));
+		}
+		token = strtok_r(NULL, ",", &end_str);
+	}
+
+	char *jsonStr = cJSON_Print(jsonObject);
+	//printf("%s\n%s\n", state, jsonStr);
+
+	char topic[100];
+	snprintf(topic, 100, "powertagd/%08x/%s", srcid, state);
+
+	publish_mqtt(topic, jsonStr);
+
+	free(jsonStr);
+	cJSON_Delete(jsonObject);
+
+	//write_report("powertag/0x%08x %s %lu\n", srcid, str, timestamp);
 }
 
 
@@ -637,7 +698,9 @@ static void gpf_process_mfr_specific_reporting(const GpFrame *f)
 	if (str[len-1] == ',')
 		str[len-1] = '\0';
 
-	write_report("powertag,id=0x%08x %s %lu\n", srcid, str, timestamp);
+	//write_report("powertag,id=0x%08x %s %lu\n", srcid, str, timestamp);
+	//write_report("powertag/0x%08x %s %lu\n", srcid, str, timestamp);
+	write_mqtt_report(srcid, timestamp, str);
 }
 
 static void gpf_process_mfr_multi_cluster_reporting(const GpFrame *f)
@@ -667,6 +730,9 @@ static int parse_output_arg(const char *arg)
 	if (strcmp(arg, "influxdb") == 0)
 		return OUTPUT_INFLUXDB;
 
+	if (strcmp(arg, "mqtt") == 0)
+	    return OUTPUT_MQTT;
+
 	if (strcmp(arg, "-") == 0 || strcmp(arg, "stdout") == 0) {
 		output_file = stdout;
 		return OUTPUT_FILE;
@@ -681,7 +747,7 @@ static int parse_output_arg(const char *arg)
 
 static void usage(void)
 {
-	printf("Usage: powertagd [-qv] [-d device]\n");
+	printf("Usage: powertagd [-qv] [-d device] [-o output <stdout|influxdb|mqtt>]\n");
 	exit(1);
 }
 
@@ -840,8 +906,10 @@ int main(int argc, char **argv)
 		return 1;
 
 #ifdef ENABLE_MQTT
-	if (mqtt_client_init() != 0)
-		return 1;
+	if (output_type == OUTPUT_MQTT) {
+		if (mqtt_client_init() != 0)
+			return 1;
+	}
 #endif
 
 	while (1) {
