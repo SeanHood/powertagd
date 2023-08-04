@@ -39,6 +39,13 @@ static struct {
 	struct sockaddr_in addr;
 } influx_opts;
 
+static struct {
+	const char *host;
+	const int *port;
+	const char *username;
+	const char *password;
+} mqtt_opts;
+
 /*
  * InfluxDB metrics are written in batch every 30s.
  * We assume the buffer is large enough to store all PowerTag reports for
@@ -99,7 +106,7 @@ static int mqtt_client_init(void)
 	 * CONNECT/CONNACK flow, you should use mosquitto_loop_start() or
 	 * mosquitto_loop_forever() for processing net traffic.
 	 */
-	int rc = mosquitto_connect(mosq, "192.168.178.211", 1883, 60);
+	int rc = mosquitto_connect(mosq, mqtt_opts.host, 1883, 60);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		mosquitto_destroy(mosq);
 		LOG_ERR("could not connect to MQTT broker: %s", mosquitto_strerror(rc));
@@ -698,9 +705,14 @@ static void gpf_process_mfr_specific_reporting(const GpFrame *f)
 	if (str[len-1] == ',')
 		str[len-1] = '\0';
 
-	//write_report("powertag,id=0x%08x %s %lu\n", srcid, str, timestamp);
-	//write_report("powertag/0x%08x %s %lu\n", srcid, str, timestamp);
-	write_mqtt_report(srcid, timestamp, str);
+	switch (output_type) {
+	case OUTPUT_MQTT:
+		write_mqtt_report(srcid, timestamp, str);
+		break;
+	default:
+		write_report("powertag,id=0x%08x %s %lu\n", srcid, str, timestamp);
+	}
+
 }
 
 static void gpf_process_mfr_multi_cluster_reporting(const GpFrame *f)
@@ -756,6 +768,10 @@ enum {
 	INFLUX_ORG,
 	INFLUX_BUCKET,
 	INFLUX_TOKEN,
+	MQTT_HOST,
+	MQTT_PORT = 1883,
+	MQTT_USERNAME,
+	MQTT_PASSWORD,
 };
 
 static struct option long_opts[] = {
@@ -769,6 +785,12 @@ static struct option long_opts[] = {
 	{"org",    required_argument, NULL, INFLUX_ORG},
 	{"bucket", required_argument, NULL, INFLUX_BUCKET},
 	{"token",  required_argument, NULL, INFLUX_TOKEN},
+
+	// MQTT options
+	{"host", required_argument, NULL, MQTT_HOST},
+	{"port", optional_argument, NULL, MQTT_PORT},
+	{"username", optional_argument, NULL, MQTT_USERNAME},
+	{"password", optional_argument, NULL, MQTT_PASSWORD},
 
 	{NULL, 0, NULL, 0}
 };
@@ -806,6 +828,20 @@ int main(int argc, char **argv)
 			break;
 		case INFLUX_TOKEN:
 			influx_opts.token = optarg;
+			break;
+
+		// MQTT options
+		case MQTT_HOST:
+			mqtt_opts.host = optarg;
+			break;
+		case MQTT_PORT:
+			mqtt_opts.port = atoi(optarg);
+			break;
+		case MQTT_USERNAME:
+			mqtt_opts.username = optarg;
+			break;
+		case MQTT_PASSWORD:
+			mqtt_opts.password = optarg;
 			break;
 		default:
 			usage();
@@ -888,6 +924,11 @@ int main(int argc, char **argv)
 		r = pthread_create(&influx_ctx.tid, NULL, &influx_thread, NULL);
 		if (r != 0)
 			err(1, "pthread_create");
+	}
+
+	if (output_type == OUTPUT_MQTT) {
+		if (!mqtt_opts.host)
+			errx(1, "mqtt output requires --host option");
 	}
 
 	serial_open(serialdev, BAUDRATE);
