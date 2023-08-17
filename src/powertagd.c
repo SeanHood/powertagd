@@ -41,7 +41,7 @@ static struct {
 
 static struct {
 	const char *host;
-	const int *port;
+	const char *port;
 	const char *username;
 	const char *password;
 } mqtt_opts;
@@ -100,13 +100,15 @@ static int mqtt_client_init(void)
 	mosquitto_connect_callback_set(mosq, mosq_on_connect);
 	//mosquitto_publish_callback_set(mosq, on_publish);
 
+	mosquitto_username_pw_set(mosq, mqtt_opts.username, mqtt_opts.password);
 	/*
 	 * Connect on port 1883, with a keepalive of 60 seconds.
 	 * This call makes the socket connection only, it does not complete the MQTT
 	 * CONNECT/CONNACK flow, you should use mosquitto_loop_start() or
 	 * mosquitto_loop_forever() for processing net traffic.
 	 */
-	int rc = mosquitto_connect(mosq, mqtt_opts.host, 1883, 60);
+	int port = (mqtt_opts.port == NULL) ? 1883 : atoi(mqtt_opts.port);
+	int rc = mosquitto_connect(mosq, mqtt_opts.host, port, 60);
 	if (rc != MOSQ_ERR_SUCCESS) {
 		mosquitto_destroy(mosq);
 		LOG_ERR("could not connect to MQTT broker: %s", mosquitto_strerror(rc));
@@ -788,9 +790,9 @@ static struct option long_opts[] = {
 
 	// MQTT options
 	{"host", required_argument, NULL, MQTT_HOST},
-	{"port", optional_argument, NULL, MQTT_PORT},
-	{"username", optional_argument, NULL, MQTT_USERNAME},
-	{"password", optional_argument, NULL, MQTT_PASSWORD},
+	{"port", required_argument, NULL, MQTT_PORT},
+	{"username", required_argument, NULL, MQTT_USERNAME},
+	{"password", required_argument, NULL, MQTT_PASSWORD},
 
 	{NULL, 0, NULL, 0}
 };
@@ -835,7 +837,7 @@ int main(int argc, char **argv)
 			mqtt_opts.host = optarg;
 			break;
 		case MQTT_PORT:
-			mqtt_opts.port = atoi(optarg);
+			mqtt_opts.port = optarg;
 			break;
 		case MQTT_USERNAME:
 			mqtt_opts.username = optarg;
